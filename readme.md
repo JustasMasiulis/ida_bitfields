@@ -2,7 +2,6 @@
 
 A simple IDA Pro plugin to make bitfields and bitflags in them easier to reason about.
 
-
 ## Example
 
 ### Before
@@ -23,6 +22,6 @@ To do that right click on the union member and and perform `select union field` 
 
 Copy the DLLs to the plugins folder in your IDA installation directory.
 
-## Acknowledgments
+## Acknowledgements
 
-Huge thanks to @RolfRolles for help and feedback, and @can1357 for his HexSuite/NtRays projects which essentially gave me the motivation to write this plugin.
+Huge thanks to [@RolfRolles](https://github.com/rolfrolles) for help and feedback, and [@can1357](http://github.com/can1357) for his HexSuite/NtRays projects which essentially gave me the motivation to write this plugin.
