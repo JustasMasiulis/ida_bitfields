@@ -2,6 +2,8 @@
 
 A simple IDA Pro plugin to make bitfields and bitflags in them easier to reason about.
 
+It hasn't yet been tested very much and will have some rough edges, but it works well enough for me. Feel free to open an issue if something is wrong.
+
 ## Example
 
 ### Before
