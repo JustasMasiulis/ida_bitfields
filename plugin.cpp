@@ -143,7 +143,7 @@ void handle_comparison( cexpr_t* expr )
 
 	cexpr_t* replacement = nullptr;
 	auto success = for_each_bitfield(
-		[ & ] ( udt_member_t& member, bool enabled )
+		[ &, eq_num = eq_num, band_num = band_num ] ( udt_member_t& member, bool enabled )
 		{
 			const auto fret = member.size > 1 ? eq_num->type : tinfo_t{ BTF_BOOL };
 			auto ftype = create_bitfunc( orig->type, band_num->type, fret );
