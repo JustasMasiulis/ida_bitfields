@@ -1,4 +1,7 @@
+.ccls-cache/
 .vs/
 x64/
+build/
 *.vcxproj.user
 *.vcxproj.filters
+compile_commands.json
