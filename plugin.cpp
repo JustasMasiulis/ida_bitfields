@@ -297,7 +297,7 @@ inline void handle_comparison( cexpr_t* expr )
 				access->ea = expr->ea;
 			}
 
-			merge_accesses( replacement, access, cot_land, expr->ea, tinfo_t{ BTF_BOOL } );
+			merge_accesses( replacement, access, expr->op == cot_eq ? cot_land : cot_lor, expr->ea, tinfo_t{ BTF_BOOL } );
 		}, info.underlying_expr->type, info.mask );
 
 	replace_or_delete( expr, replacement, success );
