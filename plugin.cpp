@@ -156,7 +156,7 @@ template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint
 			continue;
 
 		uint64_t mask = bitfield_access_mask( member );
-		if ( member.size != 1 && ( and_mask & mask ) != mask )
+		if ( member.size != 1 && ( and_mask & mask ) != and_mask )
 		{
 			msg( "[bitfields] bad offset (%ull) and size (%ull) combo of a field for given mask (%ull)\n", member.offset, member.size, and_mask );
 			return false;
