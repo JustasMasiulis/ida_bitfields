@@ -15,10 +15,18 @@ add_library(bitfields SHARED ${CMAKE_CURRENT_SOURCE_DIR}/plugin.cpp)
 
 target_compile_features(bitfields PRIVATE cxx_std_20)
 
+if (DEFINED ENV{IDA_PATH})
+    set(IDA_PATH $ENV{IDA_PATH})
+elseif (DEFINED ENV{IDA_DIR})
+    set(IDA_PATH $ENV{IDA_DIR})
+else()
+    message(FATAL_ERROR "IDA_PATH or IDA_DIR environment variable must be set")
+endif()
+
 target_include_directories(bitfields SYSTEM PRIVATE 
     ${hexsuite_SOURCE_DIR}
-    $ENV{IDA_PATH}/sdk/include
-    $ENV{IDA_PATH}/plugins/hexrays_sdk/include)
+    ${IDA_PATH}/sdk/include
+    ${IDA_PATH}/plugins/hexrays_sdk/include)
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set(IDA_SDK_LIB_OS "win_vc")
@@ -43,5 +51,5 @@ else()
     set(IDA_SDK_LIB_BITS "32")
 endif()
 
-target_link_libraries(bitfields PRIVATE "ida.lib" "pro.lib")
-target_link_directories(bitfields PRIVATE $ENV{IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS})
+target_link_libraries(bitfields PRIVATE "ida.lib")
+target_link_directories(bitfields PRIVATE ${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}_pro)

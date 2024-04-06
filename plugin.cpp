@@ -60,11 +60,11 @@ inline void select_first_union_field( cexpr_t*& expr )
 	if ( !expr->type.is_union() )
 		return;
 
-	udt_member_t member;
+	udm_t member;
 	for ( int i = 0; ; ++i )
 	{
 		member.offset = i;
-		if ( expr->type.find_udt_member( &member, STRMEM_INDEX ) == -1 )
+		if ( expr->type.find_udm( &member, STRMEM_INDEX ) == -1 )
 			break;
 
 		if ( !member.type.is_struct() )
@@ -79,7 +79,7 @@ inline void select_first_union_field( cexpr_t*& expr )
 	}
 }
 
-inline cexpr_t* create_bitfield_access( access_info& info, udt_member_t& member, ea_t original_ea, tinfo_t& common_type )
+inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t original_ea, tinfo_t& common_type )
 {
 	func_type_data_t data;
 	data.flags = FTI_PURE;
@@ -127,7 +127,7 @@ inline cexpr_t* create_bitfield_access( access_info& info, udt_member_t& member,
 	return access;
 }
 
-inline uint64_t bitfield_access_mask( udt_member_t& member )
+inline uint64_t bitfield_access_mask( udm_t& member )
 {
 	uint64_t mask = 0;
 	for ( int i = member.offset; i < member.offset + member.size; ++i )
@@ -139,14 +139,14 @@ inline uint64_t bitfield_access_mask( udt_member_t& member )
 // `cmp_mask` is used to calculate enabled bits in the bitfield.
 template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask )
 {
-	udt_member_t member;
+	udm_t member;
 	for ( size_t i = 0; i < 64; ++i )
 	{
 		if ( !( and_mask & ( 1ull << i ) ) )
 			continue;
 
 		member.offset = i;
-		if ( type.find_udt_member( &member, STRMEM_OFFSET ) == -1 )
+		if ( type.find_udm( &member, STRMEM_OFFSET ) == -1 )
 			continue;
 
 		if ( !member.is_bitfield() )
@@ -261,7 +261,7 @@ inline void handle_comparison( cexpr_t* expr )
 
 	cexpr_t* replacement = nullptr;
 	auto success = for_each_bitfield(
-		[ &, eq_num = eq_num ] ( udt_member_t& member )
+		[ &, eq_num = eq_num ] ( udm_t& member )
 		{
 			// construct the call / access itself
 			auto access = create_bitfield_access( info, member, expr->ea, eq_num->type );
@@ -312,7 +312,7 @@ inline void handle_assignment( cexpr_t* expr )
 
 	cexpr_t* replacement = nullptr;
 	auto success = for_each_bitfield(
-		[ & ] ( udt_member_t& member )
+		[ & ] ( udm_t& member )
 		{
 			// TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
 			// that would contain the correctly masked and shifted fields
@@ -321,6 +321,42 @@ inline void handle_assignment( cexpr_t* expr )
 		}, info.underlying_expr->type, info.mask );
 
 	replace_or_delete( expr->y, replacement, success );
+}
+
+// match |=
+inline void handle_or_assignment( cexpr_t* expr )
+{
+	// second arg has to be a number
+	auto& arg1 = *expr->y;
+	if ( arg1.op != cot_num )
+		return;
+
+	// *(type*)& is expected for first arg
+	cexpr_t* arg0 = expr->x;
+	if ( arg0->op != cot_ptr || arg0->x->op != cot_cast || arg0->x->x->op != cot_ref )
+		return;
+
+	// these functions will reference the union directly, so select a field for a start
+	select_first_union_field( arg0->x->x->x );
+	arg0 = arg0->x->x->x;
+
+	auto mask = arg1.n->_value;
+
+	cexpr_t* replacement = nullptr;
+	bool success = for_each_bitfield(
+		[ & ] ( udm_t& member )
+		{
+			auto helper = new cexpr_t();
+			helper->op = cot_helper;
+			helper->type = arg1.type;
+			helper->ea = arg1.ea;
+			helper->exflags = EXFL_ALONE;
+			helper->helper = alloc_cstr( member.name.c_str() );
+
+			merge_accesses( replacement, helper, cot_bor, arg1.ea, arg1.type );
+		}, arg0->type, mask );
+
+	replace_or_delete( &arg1, replacement, success );
 }
 
 // match special bit functions
@@ -383,7 +419,7 @@ inline void handle_call( cexpr_t* expr )
 
 	cexpr_t* replacement = nullptr;
 	bool success = for_each_bitfield(
-		[ & ] ( udt_member_t& member )
+		[ & ] ( udm_t& member )
 		{
 			auto helper = new cexpr_t();
 			helper->op = cot_helper;
@@ -416,6 +452,8 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 					handle_call( expr );
 				else if ( expr->op == cot_asg )
 					handle_assignment( expr );
+				else if ( expr->op == cot_asgbor )
+					handle_or_assignment( expr );
 
 				return 0;
 			}
