@@ -52,4 +52,8 @@ else()
 endif()
 
 target_link_libraries(bitfields PRIVATE "ida.lib")
-target_link_directories(bitfields PRIVATE ${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}_pro)
+target_link_directories(
+    bitfields PRIVATE 
+        ${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}_pro
+        ${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}
+)

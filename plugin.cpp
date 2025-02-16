@@ -85,8 +85,8 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
 	data.flags = FTI_PURE;
 	data.rettype = member.size == 1 ? tinfo_t{ BTF_BOOL } : common_type;
 	data.cc = CM_CC_UNKNOWN;
-	data.push_back( funcarg_t{ .type = info.underlying_expr->type } );
-	data.push_back( funcarg_t{ .type = common_type } );
+	data.push_back( funcarg_t{ "", info.underlying_expr->type } );
+	data.push_back( funcarg_t{ "", common_type } );
 
 	tinfo_t functype;
 	if ( !functype.create_func( data ) )
