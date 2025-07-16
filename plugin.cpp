@@ -5,6 +5,7 @@ struct access_info
 	cexpr_t* underlying_expr = nullptr;
 	uint64_t mask;
 	ea_t     ea;
+	uint64_t byte_offset;
 	uint8_t  shift_value;
 
 	explicit operator bool() const { return underlying_expr != nullptr; }
@@ -137,22 +138,27 @@ inline uint64_t bitfield_access_mask( udm_t& member )
 
 // executes callback for each member in `type` where its offset coincides with `and_mask`.
 // `cmp_mask` is used to calculate enabled bits in the bitfield.
-template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask )
+template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 )
 {
 	udm_t member;
+
+	if ( type.is_ptr() )
+			type = type.get_ptrarr_object();
+
 	for ( size_t i = 0; i < 64; ++i )
 	{
 		if ( !( and_mask & ( 1ull << i ) ) )
 			continue;
 
-		member.offset = i;
+		const auto real_offset = i + ( byte_offset * CHAR_BIT );
+		member.offset = real_offset;
 		if ( type.find_udm( &member, STRMEM_OFFSET ) == -1 )
 			continue;
 
 		if ( !member.is_bitfield() )
 			continue;
 
-		if ( member.offset != i )
+		if ( member.offset != real_offset )
 			continue;
 
 		uint64_t mask = bitfield_access_mask( member );
@@ -171,9 +177,10 @@ template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint
 // * (*(type*)&x >> imm1) & imm2
 // * *(type*)&x & imm
 // * HIDWORD(*(type*)&x)
+// * *((DWORD*)expr + imm) & imm == imm
 inline access_info unwrap_access( cexpr_t* expr )
 {
-	access_info res;
+	access_info res{};
 	if ( expr->op == cot_band )
 	{
 		auto num = expr->find_num_op();
@@ -231,20 +238,34 @@ inline access_info unwrap_access( cexpr_t* expr )
 		res.shift_value += ( uint8_t ) shiftnum->n->_value;
 	}
 
-	if ( expr->op != cot_ptr || expr->x->op != cot_cast || expr->x->x->op != cot_ref )
+	if ( expr->op != cot_ptr )
 		return res;
 
-	res.underlying_expr = expr->x->x->x;
+	constexpr auto extract_topmost_ea_level2 = []( cexpr_t* expr ) -> ea_t {
+		// extract the ea from one of the expression parts for union selection to work
+		// thanks to @RolfRolles for help with making it work
+		ea_t use_ea = expr->x->x->ea;
+		use_ea = use_ea != BADADDR ? use_ea : expr->x->ea;
+		use_ea = use_ea != BADADDR ? use_ea : expr->ea;
+		if ( use_ea == BADADDR )
+			msg( "[bitfields] can't find parent ea - won't be able to save union selection\n" );
 
-	// extract the ea from one of the expression parts for union selection to work
-	// thanks to @RolfRolles for help with making it work
-	ea_t use_ea = expr->x->x->ea;
-	use_ea = use_ea != BADADDR ? use_ea : expr->x->ea;
-	use_ea = use_ea != BADADDR ? use_ea : expr->ea;
-	if ( use_ea == BADADDR )
-		msg( "[bitfields] can't find parent ea - won't be able to save union selection\n" );
+		return use_ea;
+	};
 
-	res.ea = use_ea;
+	if ( expr->x->op == cot_cast && expr->x->x->op == cot_ref )
+	{
+		res.underlying_expr = expr->x->x->x;
+		res.ea = extract_topmost_ea_level2( expr );
+	}
+	else if ( expr->x->type.is_ptr() && ( expr->x->op == cot_add && expr->x->y->op == cot_num ) && expr->x->x->op == cot_cast )
+	{
+		const auto* num = expr->x->y;
+		res.byte_offset = expr->type.get_size() * num->n->_value;
+
+		res.underlying_expr = expr->x->x->x;
+		res.ea = extract_topmost_ea_level2( expr );
+	}
 
 	return res;
 }
@@ -298,7 +319,7 @@ inline void handle_comparison( cexpr_t* expr )
 			}
 
 			merge_accesses( replacement, access, expr->op == cot_eq ? cot_land : cot_lor, expr->ea, tinfo_t{ BTF_BOOL } );
-		}, info.underlying_expr->type, info.mask );
+		}, info.underlying_expr->type, info.mask, info.byte_offset );
 
 	replace_or_delete( expr, replacement, success );
 }
@@ -318,7 +339,7 @@ inline void handle_assignment( cexpr_t* expr )
 			// that would contain the correctly masked and shifted fields
 			const auto access = create_bitfield_access( info, member, expr->y->ea, expr->x->type );
 			merge_accesses( replacement, access, cot_bor, rhs->ea, expr->x->type );
-		}, info.underlying_expr->type, info.mask );
+		}, info.underlying_expr->type, info.mask, info.byte_offset );
 
 	replace_or_delete( expr->y, replacement, success );
 }
