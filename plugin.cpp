@@ -8,6 +8,7 @@ struct access_info
 	uint64_t byte_offset;
 	uint8_t  shift_value;
 
+	tinfo_t& type() const { return underlying_expr->type; }
 	explicit operator bool() const { return underlying_expr != nullptr; }
 };
 
@@ -29,7 +30,7 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
 		delete replacement;
 }
 
-inline void merge_accesses( cexpr_t*& original, cexpr_t* access, ctype_t op, ea_t ea, tinfo_t type )
+inline void merge_accesses( cexpr_t*& original, cexpr_t* access, ctype_t op, ea_t ea, const tinfo_t& type )
 {
 	if ( !access )
 		return;
@@ -39,7 +40,7 @@ inline void merge_accesses( cexpr_t*& original, cexpr_t* access, ctype_t op, ea_
 	else
 	{
 		original = new cexpr_t( op, original, access );
-		original->type = std::move( type );
+		original->type = type;
 		original->exflags = 0;
 		original->ea = ea;
 	}
@@ -178,64 +179,84 @@ template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint
 // * *(type*)&x & imm
 // * HIDWORD(*(type*)&x)
 // * *((DWORD*)expr + imm) & imm == imm
-inline access_info unwrap_access( cexpr_t* expr )
+inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 {
 	access_info res{};
-	if ( expr->op == cot_band )
+
+	if ( !is_assignee )
 	{
-		auto num = expr->find_num_op();
-		if ( !num )
+		// handle simple bitfield access with binary and of a mask.
+		// e.g. `x & 0x1`
+		if ( expr->op == cot_band )
+		{
+			auto num = expr->find_num_op();
+			if ( !num )
+				return res;
+
+			res.mask = num->n->_value;
+			res.shift_value = 0;
+			expr = expr->theother( num );
+		}
+		// handle special IDA macros that mask off words.
+		// e.g. `LOBYTE(x)`
+		else if ( expr->op == cot_call )
+		{
+			if ( expr->x->op != cot_helper || expr->a->size() != 1 )
+				return res;
+
+			constexpr static std::tuple<std::string_view, uint64_t, uint8_t> functions[] = {
+				{"LOBYTE",  0x00'00'00'00'00'00'00'FF, 0 * 8},
+				{"LOWORD",  0x00'00'00'00'00'00'FF'FF, 0 * 8},
+				{"LODWORD", 0x00'00'00'00'FF'FF'FF'FF, 0 * 8},
+				{"HIBYTE",  0xFF'00'00'00'00'00'00'00, 7 * 8},
+				{"HIWORD",  0xFF'FF'00'00'00'00'00'00, 6 * 8},
+				{"HIDWORD", 0xFF'FF'FF'FF'00'00'00'00, 4 * 8},
+				{"BYTE1",   0x00'00'00'00'00'00'FF'00, 1 * 8},
+				{"BYTE2",   0x00'00'00'00'00'FF'00'00, 2 * 8},
+				{"BYTE3",   0x00'00'00'00'FF'00'00'00, 3 * 8},
+				{"BYTE4",   0x00'00'00'FF'00'00'00'00, 4 * 8},
+				{"BYTE5",   0x00'00'FF'00'00'00'00'00, 5 * 8},
+				{"BYTE6",   0x00'FF'00'00'00'00'00'00, 6 * 8},
+				{"WORD1",   0x00'00'00'00'FF'FF'00'00, 2 * 8},
+				{"WORD2",   0x00'00'FF'FF'00'00'00'00, 4 * 8},
+			};
+
+			// check if it's one of the functions we care for
+			auto it = std::ranges::find( functions, expr->x->helper, [ ] ( auto&& func ) { return std::get<0>( func ); } );
+			if ( it == std::end( functions ) )
+				return res;
+
+			expr = &( *expr->a )[ 0 ];
+			res.mask = std::get<1>( *it );
+			res.shift_value = std::get<2>( *it );
+		}
+		// handle upper bit access that's transformed to a sign bit comparison.
+		// e.g. `x < 0`
+		else if ( expr->op == cot_slt )
+		{
+			auto num = expr->find_num_op();
+			if ( !num || num->n->_value != 0 )
+				return res;
+
+			expr = expr->theother( num );
+			res.mask = 1 << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
+			res.shift_value = 0;
+		}
+		else
 			return res;
 
-		res.mask = num->n->_value;
-		res.shift_value = 0;
-		expr = expr->theother( num );
-	}
-	else if ( expr->op == cot_call )
-	{
-		if ( expr->x->op != cot_helper || expr->a->size() != 1 )
-			return res;
+		if ( expr->op == cot_ushr )
+		{
+			auto shiftnum = expr->find_num_op();
+			if ( !shiftnum )
+				return res;
 
-		constexpr static std::tuple<std::string_view, uint64_t, uint8_t> functions[] = {
-			{"LOBYTE",  0x00'00'00'00'00'00'00'FF, 0 * 8},
-			{"LOWORD",  0x00'00'00'00'00'00'FF'FF, 0 * 8},
-			{"LODWORD", 0x00'00'00'00'FF'FF'FF'FF, 0 * 8},
-			{"HIBYTE",  0xFF'00'00'00'00'00'00'00, 7 * 8},
-			{"HIWORD",  0xFF'FF'00'00'00'00'00'00, 6 * 8},
-			{"HIDWORD", 0xFF'FF'FF'FF'00'00'00'00, 4 * 8},
-			{"BYTE1",   0x00'00'00'00'00'00'FF'00, 1 * 8},
-			{"BYTE2",   0x00'00'00'00'00'FF'00'00, 2 * 8},
-			{"BYTE3",   0x00'00'00'00'FF'00'00'00, 3 * 8},
-			{"BYTE4",   0x00'00'00'FF'00'00'00'00, 4 * 8},
-			{"BYTE5",   0x00'00'FF'00'00'00'00'00, 5 * 8},
-			{"BYTE6",   0x00'FF'00'00'00'00'00'00, 6 * 8},
-			{"WORD1",   0x00'00'00'00'FF'FF'00'00, 2 * 8},
-			{"WORD2",   0x00'00'FF'FF'00'00'00'00, 4 * 8},
-		};
+			expr = expr->theother( shiftnum );
+			if ( res.shift_value == 0 )
+				res.mask <<= shiftnum->n->_value;
 
-		// check if it's one of the functions we care for
-		auto it = std::ranges::find( functions, expr->x->helper, [ ] ( auto&& func ) { return std::get<0>( func ); } );
-		if ( it == std::end( functions ) )
-			return res;
-
-		expr = &( *expr->a )[ 0 ];
-		res.mask = std::get<1>( *it );
-		res.shift_value = std::get<2>( *it );
-	}
-	else
-		return res;
-
-	if ( expr->op == cot_ushr )
-	{
-		auto shiftnum = expr->find_num_op();
-		if ( !shiftnum )
-			return res;
-
-		expr = expr->theother( shiftnum );
-		if ( res.shift_value == 0 )
-			res.mask <<= shiftnum->n->_value;
-
-		res.shift_value += ( uint8_t ) shiftnum->n->_value;
+			res.shift_value += ( uint8_t ) shiftnum->n->_value;
+		}
 	}
 
 	if ( expr->op != cot_ptr )
@@ -270,7 +291,7 @@ inline access_info unwrap_access( cexpr_t* expr )
 	return res;
 }
 
-inline void handle_comparison( cexpr_t* expr )
+inline void handle_equality( cexpr_t* expr )
 {
 	auto [eq, eq_num] = normalize_binop( expr );
 	if ( eq_num->op != cot_num )
@@ -324,6 +345,25 @@ inline void handle_comparison( cexpr_t* expr )
 	replace_or_delete( expr, replacement, success );
 }
 
+inline void handle_value_expr( cexpr_t* access )
+{
+	auto info = unwrap_access( access );
+	if ( !info )
+		return;
+
+	cexpr_t* replacement = nullptr;
+	auto success = for_each_bitfield(
+		[ & ] ( udm_t& member )
+		{
+			// TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
+			// that would contain the correctly masked and shifted fields
+			const auto access = create_bitfield_access( info, member, info.ea, info.type() );
+			merge_accesses( replacement, access, cot_bor, info.ea, info.type() );
+		}, info.underlying_expr->type, info.mask, info.byte_offset );
+
+	replace_or_delete( access, replacement, success );
+}
+
 inline void handle_assignment( cexpr_t* expr )
 {
 	auto rhs = expr->y;
@@ -348,36 +388,106 @@ inline void handle_assignment( cexpr_t* expr )
 inline void handle_or_assignment( cexpr_t* expr )
 {
 	// second arg has to be a number
-	auto& arg1 = *expr->y;
-	if ( arg1.op != cot_num )
+	auto& num = *expr->y;
+	if ( num.op != cot_num )
 		return;
 
-	// *(type*)& is expected for first arg
-	cexpr_t* arg0 = expr->x;
-	if ( arg0->op != cot_ptr || arg0->x->op != cot_cast || arg0->x->x->op != cot_ref )
+	auto info = unwrap_access( expr->x, true );
+	if ( !info )
 		return;
 
-	// these functions will reference the union directly, so select a field for a start
-	select_first_union_field( arg0->x->x->x );
-	arg0 = arg0->x->x->x;
-
-	auto mask = arg1.n->_value;
-
+	const auto mask = num.n->_value;
 	cexpr_t* replacement = nullptr;
-	bool success = for_each_bitfield(
-		[ & ] ( udm_t& member )
-		{
-			auto helper = new cexpr_t();
-			helper->op = cot_helper;
-			helper->type = arg1.type;
-			helper->ea = arg1.ea;
-			helper->exflags = EXFL_ALONE;
-			helper->helper = alloc_cstr( member.name.c_str() );
+	const auto& type = info.type();
+	bool success;
+	if ( type.is_union() )
+	{
+		select_first_union_field( info.underlying_expr );
+		success = for_each_bitfield(
+			[ & ] ( udm_t& member )
+			{
+				auto helper = new cexpr_t();
+				helper->op = cot_helper;
+				helper->type = type;
+				helper->ea = info.ea;
+				helper->exflags = EXFL_ALONE;
+				helper->helper = alloc_cstr( member.name.c_str() );
 
-			merge_accesses( replacement, helper, cot_bor, arg1.ea, arg1.type );
-		}, arg0->type, mask );
+				merge_accesses( replacement, helper, cot_bor, info.ea, type );
+			}, info.underlying_expr->type, mask, info.byte_offset );
 
-	replace_or_delete( &arg1, replacement, success );
+		replace_or_delete( &num, replacement, success );
+	}
+	else
+	{
+		// this is a dirty hack to handle cases where we don't have a primitive union variable
+		// to base the access off of. We'll have an internal error withut this.
+		std::vector<char*> fields;
+		success = for_each_bitfield(
+			[ & ] ( udm_t& member )
+			{
+				fields.push_back( alloc_cstr( member.name.c_str() ) );
+			}, info.underlying_expr->type, mask, info.byte_offset );
+
+			if ( !success )
+			{
+				for ( auto& field : fields )
+					delete field;
+
+				return;
+			}
+
+			func_type_data_t data;
+			data.flags = FTI_PURE;
+			data.rettype = tinfo_t{ BTF_VOID };
+			data.cc = CM_CC_UNKNOWN;
+			data.reserve( fields.size() + 1 );
+			for ( size_t i = 0; i < fields.size() + 1; ++i )
+				data.push_back( funcarg_t{ "", info.underlying_expr->type } );
+
+			tinfo_t functype;
+			if ( !functype.create_func( data ) )
+			{
+				msg( "[bitfields] failed to create a bitfield access function type.\n" );
+				return;
+			}
+
+			// construct the callable
+			auto call_fn = new cexpr_t();
+			call_fn->op = cot_helper;
+			call_fn->type = functype;
+			call_fn->exflags = 0;
+			call_fn->helper = alloc_cstr( "bset" );
+
+			// construct the call args
+			auto call_args = new carglist_t( std::move( functype ) );
+			call_args->reserve(  data.size() );
+
+			call_args->push_back( carg_t{} );
+			auto& arg0 = ( *call_args )[ 0 ];
+			static_cast< cexpr_t& >( arg0 ) = *info.underlying_expr;
+			arg0.ea = info.ea;
+
+			for (auto& field : fields)
+			{
+				call_args->push_back( carg_t{} );
+				auto& arg1 = ( *call_args )[ 1 ];
+				arg1.op = cot_helper;
+				arg1.type = info.underlying_expr->type;
+				arg1.exflags = EXFL_ALONE;
+				arg1.helper = field;
+			}
+
+			// construct the call / access itself
+			replacement = new cexpr_t( cot_call, call_fn );
+			replacement->type = tinfo_t{ BTF_VOID };
+			replacement->exflags = 0;
+			replacement->a = call_args;
+			replacement->ea = info.ea;
+
+			replace_or_delete( expr, replacement, success );
+	}
+
 }
 
 // match special bit functions
@@ -468,11 +578,13 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 			int idaapi visit_expr( cexpr_t* expr ) override
 			{
 				if ( expr->op == cot_eq || expr->op == cot_ne )
-					handle_comparison( expr );
+					handle_equality( expr );
+				else if ( expr-> op == cot_slt )
+					handle_value_expr( expr );
 				else if ( expr->op == cot_call )
 					handle_call( expr );
 				else if ( expr->op == cot_asg )
-					handle_assignment( expr );
+					handle_value_expr( expr->y );
 				else if ( expr->op == cot_asgbor )
 					handle_or_assignment( expr );
 
