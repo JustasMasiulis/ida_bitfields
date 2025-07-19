@@ -231,8 +231,8 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 			res.shift_value = std::get<2>( *it );
 		}
 		// handle upper bit access that's transformed to a sign bit comparison.
-		// e.g. `x < 0`
-		else if ( expr->op == cot_slt )
+		// e.g. `x < 0`, `x <= 0`, `x > 0` and `x >= 0`
+		else if (expr->op == cot_slt || expr->op == cot_sle || expr->op == cot_sgt || expr->op == cot_sge)
 		{
 			auto num = expr->find_num_op();
 			if ( !num || num->n->_value != 0 )
@@ -579,7 +579,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 			{
 				if ( expr->op == cot_eq || expr->op == cot_ne )
 					handle_equality( expr );
-				else if ( expr-> op == cot_slt )
+				else if ( expr->op == cot_slt || expr->op == cot_sle || expr->op == cot_sgt || expr->op == cot_sge)
 					handle_value_expr( expr );
 				else if ( expr->op == cot_call )
 					handle_call( expr );
