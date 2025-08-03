@@ -1,4 +1,4 @@
-#include <hexsuite.hpp>
+﻿#include <hexsuite.hpp>
 
 struct access_info
 {
@@ -7,6 +7,7 @@ struct access_info
 	ea_t     ea;
 	uint64_t byte_offset;
 	uint8_t  shift_value;
+	bool invert;
 
 	tinfo_t& type() const { return underlying_expr->type; }
 	explicit operator bool() const { return underlying_expr != nullptr; }
@@ -231,12 +232,14 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 			res.shift_value = std::get<2>( *it );
 		}
 		// handle upper bit access that's transformed to a sign bit comparison.
-		// e.g. `x < 0`
-		else if ( expr->op == cot_slt )
+		// e.g. `x < 0`, `x >= 0`
+		else if ( expr->op == cot_slt || expr->op == cot_sge )
 		{
 			auto num = expr->find_num_op();
 			if ( !num || num->n->_value != 0 )
 				return res;
+
+			res.invert = ( expr->op == cot_sge ) ? true : false;
 
 			expr = expr->theother( num );
 			res.mask = 1 << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
@@ -357,31 +360,21 @@ inline void handle_value_expr( cexpr_t* access )
 		{
 			// TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
 			// that would contain the correctly masked and shifted fields
-			const auto access = create_bitfield_access( info, member, info.ea, info.type() );
+			auto access = create_bitfield_access( info, member, info.ea, info.type() );
+
+			if ( info.invert && member.size == 1 )      // single‑bit fields only
+			{
+				auto lnot = new cexpr_t( cot_lnot, access );
+				lnot->type = tinfo_t{ BTF_BOOL };
+				lnot->exflags = 0;
+				lnot->ea = info.ea;
+				access = lnot;
+			}
+
 			merge_accesses( replacement, access, cot_bor, info.ea, info.type() );
 		}, info.underlying_expr->type, info.mask, info.byte_offset );
 
 	replace_or_delete( access, replacement, success );
-}
-
-inline void handle_assignment( cexpr_t* expr )
-{
-	auto rhs = expr->y;
-	auto info = unwrap_access( rhs );
-	if ( !info )
-		return;
-
-	cexpr_t* replacement = nullptr;
-	auto success = for_each_bitfield(
-		[ & ] ( udm_t& member )
-		{
-			// TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
-			// that would contain the correctly masked and shifted fields
-			const auto access = create_bitfield_access( info, member, expr->y->ea, expr->x->type );
-			merge_accesses( replacement, access, cot_bor, rhs->ea, expr->x->type );
-		}, info.underlying_expr->type, info.mask, info.byte_offset );
-
-	replace_or_delete( expr->y, replacement, success );
 }
 
 // match |=
@@ -579,7 +572,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 			{
 				if ( expr->op == cot_eq || expr->op == cot_ne )
 					handle_equality( expr );
-				else if ( expr-> op == cot_slt )
+				else if ( expr->op == cot_slt || expr->op == cot_sge )
 					handle_value_expr( expr );
 				else if ( expr->op == cot_call )
 					handle_call( expr );
